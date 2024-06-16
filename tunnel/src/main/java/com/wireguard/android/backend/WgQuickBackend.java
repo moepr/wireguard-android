@@ -17,10 +17,16 @@ import com.wireguard.config.Config;
 import com.wireguard.crypto.Key;
 import com.wireguard.util.NonNullForAll;
 
+import org.xbill.DNS.Lookup;
+import org.xbill.DNS.Record;
+import org.xbill.DNS.SRVRecord;
+import org.xbill.DNS.Type;
+
 import java.io.File;
 import java.io.FileOutputStream;
+import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
-import java.time.Instant;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -167,12 +173,77 @@ public final class WgQuickBackend implements Backend {
         return state;
     }
 
+    /**
+     * 解析并替换地址端口
+     * @param endpointLine
+     * @return
+     * @throws Exception
+     */
+    private static String replaceSrvAndIp4p(String endpointLine) throws Exception {
+        //添加srv和ip4p支持
+        String endpoint = endpointLine.replace("Endpoint", "").trim();
+        endpoint = endpoint.replace("endpoint", "").trim();
+        endpoint = endpoint.replace("=", "").trim();
+        final String[] endpointSplit = endpoint.split(":");
+        final String host = endpointSplit[0];
+        final int port = Integer.parseInt(endpointSplit[1]);
+        if (port == 0) {
+            String realHostIp = host;
+            int realPort = 0;
+            if((host.contains("._tcp.") || host.contains("._udp."))){
+                //走解析srv逻辑
+                final Lookup lookup = new Lookup(host, Type.SRV);
+                final Record[] records = lookup.run();
+                if (records != null) {
+                    final Record record = records[0];
+                    if (record instanceof final SRVRecord srvRecord) {
+                        final String target = srvRecord.getTarget().toString();
+                        realHostIp = InetAddress.getByName(target).getHostAddress();
+                        realPort = srvRecord.getPort();
+                    }
+                } else {
+                    realHostIp = "0.0.0.0";
+                }
+            } else {
+                //走解析ip4p逻辑
+                final String[] split = host.split(":");
+                realPort = Integer.parseInt(split[2], 16);
+                final int ipab = Integer.parseInt(split[3], 16);
+                final int ipcd = Integer.parseInt(split[4], 16);
+                final int ipa = ipab >> 8;
+                final int ipb = ipab & 0xff;
+                final int ipc = ipcd >> 8;
+                final int ipd = ipcd & 0xff;
+                realHostIp = ipa + "." + ipb + "." + ipc + "." + ipd;
+            }
+            endpointLine = endpointLine.replace(host,realHostIp);
+            endpointLine = endpointLine.replace(port+"",realPort+"");
+        }
+        return endpointLine;
+    }
+
     private void setStateInternal(final Tunnel tunnel, @Nullable final Config config, final State state) throws Exception {
         Log.i(TAG, "Bringing tunnel " + tunnel.getName() + ' ' + state);
 
         Objects.requireNonNull(config, "Trying to set state up with a null config");
-
+        Log.i(TAG, "============localTemporaryDir: " + localTemporaryDir);
         final File tempFile = new File(localTemporaryDir, tunnel.getName() + ".conf");
+        /*
+         * 解析srv/ip4p，修改tempFile文件中地址和端口，解决内核模式无法使用srv/ip4p的问题
+         */
+        //1.读取文件内容：将文件内容读入内存。
+        List<String> lines = Files.readAllLines(tempFile.toPath());
+        for (int i = 0; i < lines.size(); i++) {
+            String lineStr = lines.get(i);
+            if(lineStr.startsWith("Endpoint")||lineStr.startsWith("endpoint")){
+                //2.修改文件内容：对读入的内容进行所需的修改。
+                lineStr = replaceSrvAndIp4p(lineStr);
+            }
+            lines.set(i, lineStr);
+        }
+        //3.写回文件内容：将修改后的内容写回文件
+        Files.write(tempFile.toPath(), lines);
+
         try (final FileOutputStream stream = new FileOutputStream(tempFile, false)) {
             stream.write(config.toWgQuickString().getBytes(StandardCharsets.UTF_8));
         }

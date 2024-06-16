@@ -17,6 +17,7 @@ import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.net.URL;
 import java.net.UnknownHostException;
 import java.time.Duration;
 import java.time.Instant;
@@ -52,6 +53,26 @@ public final class InetEndpoint {
     public static InetEndpoint parse(final String endpoint) throws ParseException {
         if (FORBIDDEN_CHARACTERS.matcher(endpoint).find())
             throw new ParseException(InetEndpoint.class, endpoint, "Forbidden characters");
+        if(endpoint.contains("._tcp.")||endpoint.contains("._udp.")){
+            //srv格式使用URL解析
+            URL url;
+            try {
+                url = new URL("http://" + endpoint);
+            } catch (final Exception e) {
+                throw new ParseException(InetEndpoint.class, endpoint, e);
+            }
+            if (url.getPort() < 0 || url.getPort() > 65535)
+                //无法解析对端错误
+                throw new ParseException(InetEndpoint.class, endpoint, "Missing/invalid port number");
+            try {
+                InetAddresses.parse(url.getHost());
+                // Parsing ths host as a numeric address worked, so we don't need to do DNS lookups.
+                return new InetEndpoint(url.getHost(), true, url.getPort());
+            } catch (final ParseException ignored) {
+                // Failed to parse the host as a numeric address, so it must be a DNS hostname/FQDN.
+                return new InetEndpoint(url.getHost(), false, url.getPort());
+            }
+        }
         final URI uri;
         try {
             uri = new URI("wg://" + endpoint);
@@ -59,6 +80,7 @@ public final class InetEndpoint {
             throw new ParseException(InetEndpoint.class, endpoint, e);
         }
         if (uri.getPort() < 0 || uri.getPort() > 65535)
+            //无法解析对端错误
             throw new ParseException(InetEndpoint.class, endpoint, "Missing/invalid port number");
         try {
             InetAddresses.parse(uri.getHost());
