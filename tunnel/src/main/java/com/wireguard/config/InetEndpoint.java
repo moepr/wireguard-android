@@ -5,6 +5,8 @@
 
 package com.wireguard.config;
 
+import android.util.Log;
+
 import com.wireguard.util.NonNullForAll;
 
 import org.xbill.DNS.Lookup;
@@ -13,7 +15,7 @@ import org.xbill.DNS.SRVRecord;
 import org.xbill.DNS.TextParseException;
 import org.xbill.DNS.Type;
 
-import java.net.Inet4Address;
+import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -122,11 +124,14 @@ public final class InetEndpoint {
             //TODO(zx2c4): Implement a real timeout mechanism using DNS TTL
             if (Duration.between(lastResolution, Instant.now()).toMinutes() > 1) {
                 try {
-                    //TODO 添加srv和ip4p支持
+                    Log.i("getResolved","==============host:"+host);
+                    Log.i("getResolved","==============port:"+port);
+                    //添加srv和ip4p支持
                     String realHostIp = "0.0.0.0";
                     int realPort = port;
                     if(port == 0 && (host.contains("._tcp.") || host.contains("._udp."))){
                         //走解析srv逻辑
+                        Log.i("getResolved","==============走解析srv逻辑:"+host);
                         Lookup lookup = new Lookup(host, Type.SRV);
                         final Record[] records = lookup.run();
                         if (records != null) {
@@ -135,8 +140,6 @@ public final class InetEndpoint {
                                 SRVRecord srvRecord = (SRVRecord) record;
                                 String target = srvRecord.getTarget().toString();
                                 int port = srvRecord.getPort();
-                                //int priority = srvRecord.getPriority();
-                                //int weight = srvRecord.getWeight();
                                 final InetAddress addr = InetAddress.getByName(target);
                                 realPort = port;
                                 realHostIp = addr.getHostAddress();
@@ -147,11 +150,12 @@ public final class InetEndpoint {
                             realHostIp = "0.0.0.0";
                         }
                     } else {
+                        Log.i("getResolved","==============走解析ip4p逻辑:"+host);
                         // Prefer v4 endpoints over v6 to work around DNS64 and IPv6 NAT issues.
                         final InetAddress[] candidates = InetAddress.getAllByName(host);
                         InetAddress address = candidates[0];
                         for (final InetAddress candidate : candidates) {
-                            if (candidate instanceof Inet4Address) {
+                            if (candidate instanceof Inet6Address) {
                                 address = candidate;
                                 break;
                             }
@@ -173,6 +177,7 @@ public final class InetEndpoint {
                             realHostIp = address.getHostAddress();
                         }
                     }
+                    Log.i("getResolved","==============解析结果 host:"+realHostIp+" port:"+realPort);
                     resolved = new InetEndpoint(realHostIp, true, realPort);
                     //resolved = new InetEndpoint(address.getHostAddress(), true, port);
                     lastResolution = Instant.now();

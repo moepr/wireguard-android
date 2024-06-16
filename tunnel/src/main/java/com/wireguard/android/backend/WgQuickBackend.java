@@ -24,6 +24,7 @@ import org.xbill.DNS.Type;
 
 import java.io.File;
 import java.io.FileOutputStream;
+import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -181,12 +182,15 @@ public final class WgQuickBackend implements Backend {
      */
     private static String replaceSrvAndIp4p(String endpointLine) throws Exception {
         //添加srv和ip4p支持
+        Log.i(TAG, "============endpointLine: " + endpointLine);
         String endpoint = endpointLine.replace("Endpoint", "").trim();
         endpoint = endpoint.replace("endpoint", "").trim();
         endpoint = endpoint.replace("=", "").trim();
         final String[] endpointSplit = endpoint.split(":");
         final String host = endpointSplit[0];
         final int port = Integer.parseInt(endpointSplit[1]);
+        Log.i(TAG, "============endpointLine host: " + host);
+        Log.i(TAG, "============endpointLine port: " + port);
         if (port == 0) {
             String realHostIp = host;
             int realPort = 0;
@@ -206,18 +210,38 @@ public final class WgQuickBackend implements Backend {
                 }
             } else {
                 //走解析ip4p逻辑
-                final String[] split = host.split(":");
+                final InetAddress[] candidates = InetAddress.getAllByName(host);
+                InetAddress address = candidates[0];
+                for (final InetAddress candidate : candidates) {
+                    if (candidate instanceof Inet6Address) {
+                        address = candidate;
+                        break;
+                    }
+                }
+                String ip4p = address.getHostAddress();
+                Log.i(TAG, "============endpointLine ip4p: " + ip4p);
+                String[] split = ip4p.split(":");
                 realPort = Integer.parseInt(split[2], 16);
-                final int ipab = Integer.parseInt(split[3], 16);
-                final int ipcd = Integer.parseInt(split[4], 16);
-                final int ipa = ipab >> 8;
-                final int ipb = ipab & 0xff;
-                final int ipc = ipcd >> 8;
-                final int ipd = ipcd & 0xff;
-                realHostIp = ipa + "." + ipb + "." + ipc + "." + ipd;
+                int ipab = Integer.parseInt(split[3], 16);
+                int ipcd = Integer.parseInt(split[4], 16);
+                int ipa = ipab >> 8;
+                int ipb = ipab & 0xff;
+                int ipc = ipcd >> 8;
+                int ipd = ipcd & 0xff;
+                Log.i(TAG, "============endpointLine ipab: " + ipab);
+                Log.i(TAG, "============endpointLine ipcd: " + ipcd);
+                Log.i(TAG, "============endpointLine ipa: " + ipa);
+                Log.i(TAG, "============endpointLine ipb: " + ipb);
+                Log.i(TAG, "============endpointLine ipc: " + ipc);
+                Log.i(TAG, "============endpointLine ipd: " + ipd);
+                realHostIp = ipa+"."+ipb+"."+ipc+"."+ipd;
             }
+            Log.i(TAG, "============endpointLine realHostIp: " + realHostIp);
+            Log.i(TAG, "============endpointLine realPort: " + realPort);
             endpointLine = endpointLine.replace(host,realHostIp);
-            endpointLine = endpointLine.replace(port+"",realPort+"");
+            endpointLine = endpointLine.replace(":"+port,":"+realPort);
+            //endpointLine = "Endpoint = " + realHostIp + ":" + realPort;
+            Log.i(TAG, "============endpointLine replaced: " + endpointLine);
         }
         return endpointLine;
     }
@@ -227,7 +251,17 @@ public final class WgQuickBackend implements Backend {
 
         Objects.requireNonNull(config, "Trying to set state up with a null config");
         Log.i(TAG, "============localTemporaryDir: " + localTemporaryDir);
-        final File tempFile = new File(localTemporaryDir, tunnel.getName() + ".conf");
+        File tempFile = new File(localTemporaryDir, tunnel.getName() + ".conf");
+
+        try (final FileOutputStream stream = new FileOutputStream(tempFile, false)) {
+            stream.write(config.toWgQuickString().getBytes(StandardCharsets.UTF_8));
+        }
+        String command = String.format("wg-quick %s '%s'",
+                state.toString().toLowerCase(Locale.ENGLISH), tempFile.getAbsolutePath());
+        if (state == State.UP)
+            command = "cat /sys/module/wireguard/version && " + command;
+        Log.i(TAG, "============tempFile: " + tempFile);
+        Log.i(TAG, "============tempFile exists: " + tempFile.exists());
         /*
          * 解析srv/ip4p，修改tempFile文件中地址和端口，解决内核模式无法使用srv/ip4p的问题
          */
@@ -243,14 +277,6 @@ public final class WgQuickBackend implements Backend {
         }
         //3.写回文件内容：将修改后的内容写回文件
         Files.write(tempFile.toPath(), lines);
-
-        try (final FileOutputStream stream = new FileOutputStream(tempFile, false)) {
-            stream.write(config.toWgQuickString().getBytes(StandardCharsets.UTF_8));
-        }
-        String command = String.format("wg-quick %s '%s'",
-                state.toString().toLowerCase(Locale.ENGLISH), tempFile.getAbsolutePath());
-        if (state == State.UP)
-            command = "cat /sys/module/wireguard/version && " + command;
         final int result = rootShell.run(null, command);
         // noinspection ResultOfMethodCallIgnored
         tempFile.delete();
