@@ -1,5 +1,5 @@
 [versions]
-agp = "8.2.0-beta06"
+agp = "8.2.2"
 kotlin = "1.9.0"
 
 [libraries]
@@ -17,6 +17,7 @@ androidx-lifecycle-runtime-ktx = "androidx.lifecycle:lifecycle-runtime-ktx:2.6.2
 androidx-preference-ktx = "androidx.preference:preference-ktx:1.2.1"
 desugarJdkLibs = "com.android.tools:desugar_jdk_libs:2.0.3"
 google-material = "com.google.android.material:material:1.10.0"
+dnsjava = "dnsjava:dnsjava:3.5.3"
 jsr305 = "com.google.code.findbugs:jsr305:3.0.2"
 junit = "junit:junit:4.13.2"
 kotlinx-coroutines-android = "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.0"
