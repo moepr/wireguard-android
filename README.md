@@ -7,7 +7,7 @@ This is an Android GUI for [WireGuard](https://www.wireguard.com/). It [opportun
 ## Building
 
 ```
-$ git clone --recurse-submodules https://git.zx2c4.com/wireguard-android
+$ git clone --recurse-submodules https://github.com/moepr/wireguard-android
 $ cd wireguard-android
 $ ./gradlew assembleRelease
 ```
