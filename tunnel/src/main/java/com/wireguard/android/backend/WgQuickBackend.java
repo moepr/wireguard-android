@@ -24,6 +24,7 @@ import org.xbill.DNS.Type;
 
 import java.io.File;
 import java.io.FileOutputStream;
+import java.net.Inet4Address;
 import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
@@ -202,7 +203,15 @@ public final class WgQuickBackend implements Backend {
                     final Record record = records[0];
                     if (record instanceof final SRVRecord srvRecord) {
                         final String target = srvRecord.getTarget().toString();
-                        realHostIp = InetAddress.getByName(target).getHostAddress();
+                        final InetAddress[] candidates = InetAddress.getAllByName(target);
+                        InetAddress address = candidates[0];
+                        for (final InetAddress candidate : candidates) {
+                            if (candidate instanceof Inet4Address) {
+                                address = candidate;
+                                break;
+                            }
+                        }
+                        realHostIp = address.getHostAddress();
                         realPort = srvRecord.getPort();
                     }
                 } else {

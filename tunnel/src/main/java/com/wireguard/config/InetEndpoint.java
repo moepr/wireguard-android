@@ -15,6 +15,7 @@ import org.xbill.DNS.SRVRecord;
 import org.xbill.DNS.TextParseException;
 import org.xbill.DNS.Type;
 
+import java.net.Inet4Address;
 import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.URI;
@@ -140,9 +141,16 @@ public final class InetEndpoint {
                                 SRVRecord srvRecord = (SRVRecord) record;
                                 String target = srvRecord.getTarget().toString();
                                 int port = srvRecord.getPort();
-                                final InetAddress addr = InetAddress.getByName(target);
+                                final InetAddress[] candidates = InetAddress.getAllByName(target);
+                                InetAddress address = candidates[0];
+                                for (final InetAddress candidate : candidates) {
+                                    if (candidate instanceof Inet4Address) {
+                                        address = candidate;
+                                        break;
+                                    }
+                                }
                                 realPort = port;
-                                realHostIp = addr.getHostAddress();
+                                realHostIp = address.getHostAddress();
                             }
                         } else {
                             //System.out.println("No SRV records found for " + host);

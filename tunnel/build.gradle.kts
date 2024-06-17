@@ -68,6 +68,7 @@ dependencies {
     implementation(libs.androidx.annotation)
     implementation(libs.androidx.collection)
     implementation(libs.dnsjava)
+    implementation(libs.logback)
     compileOnly(libs.jsr305)
     testImplementation(libs.junit)
 }

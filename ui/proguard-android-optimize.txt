@@ -51,3 +51,4 @@
 -dontwarn lombok.Generated
 -dontwarn org.slf4j.impl.StaticLoggerBinder
 -dontwarn sun.net.spi.nameservice.NameServiceDescriptor
+-dontwarn org.slf4j.spi.SLF4JServiceProvider
