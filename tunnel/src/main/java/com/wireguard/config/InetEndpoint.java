@@ -134,11 +134,12 @@ public final class InetEndpoint {
                     if(port == 0 && (host.contains("._tcp.") || host.contains("._udp."))){
                         //走解析srv逻辑
                         Log.i("getResolved","==============走解析srv逻辑:"+host);
-                        SimpleResolver resolver = new SimpleResolver("223.5.5.5");
+                        SimpleResolver resolver = new SimpleResolver("114.114.114.114");
                         resolver.setPort(53);
                         Lookup lookup = new Lookup(host, Type.SRV);
                         lookup.setResolver(resolver);
                         final Record[] records = lookup.run();
+                        Log.i("getResolved","==============走解析srv逻辑 records:"+records);
                         if (records != null) {
                             Record record = records[0];
                             if (record instanceof SRVRecord) {
