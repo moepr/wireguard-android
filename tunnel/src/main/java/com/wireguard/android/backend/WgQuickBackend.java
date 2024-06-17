@@ -197,20 +197,27 @@ public final class WgQuickBackend implements Backend {
             int realPort = 0;
             if((host.contains("._tcp.") || host.contains("._udp."))){
                 //走解析srv逻辑
+                Log.i(TAG, "============endpointLine 走解析srv逻辑: " + host);
                 final Lookup lookup = new Lookup(host, Type.SRV);
                 final Record[] records = lookup.run();
+                Log.i(TAG, "============endpointLine records: " + records);
                 if (records != null) {
                     final Record record = records[0];
+                    Log.i(TAG, "============endpointLine record: " + record);
                     if (record instanceof final SRVRecord srvRecord) {
+                        Log.i(TAG, "============endpointLine srvRecord: " + srvRecord);
                         final String target = srvRecord.getTarget().toString();
+                        Log.i(TAG, "============endpointLine target: " + target);
                         final InetAddress[] candidates = InetAddress.getAllByName(target);
                         InetAddress address = candidates[0];
+                        Log.i(TAG, "============endpointLine address: " + address);
                         for (final InetAddress candidate : candidates) {
                             if (candidate instanceof Inet4Address) {
                                 address = candidate;
                                 break;
                             }
                         }
+                        Log.i(TAG, "============endpointLine address2: " + address);
                         realHostIp = address.getHostAddress();
                         realPort = srvRecord.getPort();
                     }
