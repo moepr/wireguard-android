@@ -12,6 +12,7 @@ import com.wireguard.util.NonNullForAll;
 import org.xbill.DNS.Lookup;
 import org.xbill.DNS.Record;
 import org.xbill.DNS.SRVRecord;
+import org.xbill.DNS.SimpleResolver;
 import org.xbill.DNS.TextParseException;
 import org.xbill.DNS.Type;
 
@@ -133,7 +134,10 @@ public final class InetEndpoint {
                     if(port == 0 && (host.contains("._tcp.") || host.contains("._udp."))){
                         //走解析srv逻辑
                         Log.i("getResolved","==============走解析srv逻辑:"+host);
+                        SimpleResolver resolver = new SimpleResolver("223.5.5.5");
+                        resolver.setPort(53);
                         Lookup lookup = new Lookup(host, Type.SRV);
+                        lookup.setResolver(resolver);
                         final Record[] records = lookup.run();
                         if (records != null) {
                             Record record = records[0];
