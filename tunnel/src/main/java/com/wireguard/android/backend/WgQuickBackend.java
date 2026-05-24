@@ -17,10 +17,20 @@ import com.wireguard.config.Config;
 import com.wireguard.crypto.Key;
 import com.wireguard.util.NonNullForAll;
 
+import org.xbill.DNS.Lookup;
+import org.xbill.DNS.Record;
+import org.xbill.DNS.SRVRecord;
+import org.xbill.DNS.SimpleResolver;
+import org.xbill.DNS.Type;
+
 import java.io.File;
 import java.io.FileOutputStream;
+import java.net.Inet4Address;
+import java.net.Inet6Address;
+import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -177,10 +187,102 @@ public final class WgQuickBackend implements Backend {
         return state;
     }
 
+    /**
+     * 解析并替换地址端口
+     * @param endpointLine
+     * @return
+     * @throws Exception
+     */
+    private static String replaceSrvAndIp4p(String endpointLine) throws Exception {
+        //添加srv和ip4p支持
+        Log.i(TAG, "============endpointLine: " + endpointLine);
+        String endpoint = endpointLine.replace("Endpoint", "").trim();
+        endpoint = endpoint.replace("endpoint", "").trim();
+        endpoint = endpoint.replace("=", "").trim();
+        final String[] endpointSplit = endpoint.split(":");
+        final String host = endpointSplit[0];
+        final int port = Integer.parseInt(endpointSplit[1]);
+        Log.i(TAG, "============endpointLine host: " + host);
+        Log.i(TAG, "============endpointLine port: " + port);
+        if (port == 0) {
+            String realHostIp = host;
+            int realPort = 0;
+            if((host.contains("._tcp.") || host.contains("._udp."))){
+                //走解析srv逻辑
+                Log.i(TAG, "============endpointLine 走解析srv逻辑: " + host);
+                SimpleResolver resolver = new SimpleResolver("223.5.5.5");
+                resolver.setPort(53);
+                final Lookup lookup = new Lookup(host, Type.SRV);
+                lookup.setResolver(resolver);
+                final Record[] records = lookup.run();
+                Log.i(TAG, "============endpointLine records: " + records);
+                if (records != null) {
+                    final Record record = records[0];
+                    Log.i(TAG, "============endpointLine record: " + record);
+                    if (record instanceof final SRVRecord srvRecord) {
+                        Log.i(TAG, "============endpointLine srvRecord: " + srvRecord);
+                        final String target = srvRecord.getTarget().toString();
+                        Log.i(TAG, "============endpointLine target: " + target);
+                        final InetAddress[] candidates = InetAddress.getAllByName(target);
+                        InetAddress address = candidates[0];
+                        Log.i(TAG, "============endpointLine address: " + address);
+                        for (final InetAddress candidate : candidates) {
+                            if (candidate instanceof Inet4Address) {
+                                address = candidate;
+                                break;
+                            }
+                        }
+                        Log.i(TAG, "============endpointLine address2: " + address);
+                        realHostIp = address.getHostAddress();
+                        realPort = srvRecord.getPort();
+                    }
+                } else {
+                    realHostIp = "0.0.0.0";
+                }
+            } else {
+                //走解析ip4p逻辑
+                final InetAddress[] candidates = InetAddress.getAllByName(host);
+                InetAddress address = candidates[0];
+                for (final InetAddress candidate : candidates) {
+                    if (candidate instanceof Inet6Address) {
+                        address = candidate;
+                        break;
+                    }
+                }
+                String ip4p = address.getHostAddress();
+                Log.i(TAG, "============endpointLine ip4p: " + ip4p);
+                String[] split = ip4p.split(":");
+                realPort = Integer.parseInt(split[2], 16);
+                int ipab = Integer.parseInt(split[3], 16);
+                int ipcd = Integer.parseInt(split[4], 16);
+                int ipa = ipab >> 8;
+                int ipb = ipab & 0xff;
+                int ipc = ipcd >> 8;
+                int ipd = ipcd & 0xff;
+                Log.i(TAG, "============endpointLine ipab: " + ipab);
+                Log.i(TAG, "============endpointLine ipcd: " + ipcd);
+                Log.i(TAG, "============endpointLine ipa: " + ipa);
+                Log.i(TAG, "============endpointLine ipb: " + ipb);
+                Log.i(TAG, "============endpointLine ipc: " + ipc);
+                Log.i(TAG, "============endpointLine ipd: " + ipd);
+                realHostIp = ipa+"."+ipb+"."+ipc+"."+ipd;
+            }
+            Log.i(TAG, "============endpointLine realHostIp: " + realHostIp);
+            Log.i(TAG, "============endpointLine realPort: " + realPort);
+            endpointLine = endpointLine.replace(host,realHostIp);
+            endpointLine = endpointLine.replace(":"+port,":"+realPort);
+            //endpointLine = "Endpoint = " + realHostIp + ":" + realPort;
+            Log.i(TAG, "============endpointLine replaced: " + endpointLine);
+        }
+        return endpointLine;
+    }
+
     private void setStateInternal(final Tunnel tunnel, @Nullable final Config config, final State state) throws Exception {
         Log.i(TAG, "Bringing tunnel " + tunnel.getName() + ' ' + state);
 
         Objects.requireNonNull(config, "Trying to set state up with a null config");
+        Log.i(TAG, "============localTemporaryDir: " + localTemporaryDir);
+        File tempFile = new File(localTemporaryDir, tunnel.getName() + ".conf");
 
         final File tempFile = new File(localTemporaryDir, tunnel.getName() + ".conf");
         try (final FileOutputStream stream = new FileOutputStream(tempFile, false)) {
@@ -190,6 +292,23 @@ public final class WgQuickBackend implements Backend {
                 state.toString().toLowerCase(Locale.ENGLISH), tempFile.getAbsolutePath());
         if (state == State.UP)
             command = "cat /sys/module/wireguard/version && " + command;
+        Log.i(TAG, "============tempFile: " + tempFile);
+        Log.i(TAG, "============tempFile exists: " + tempFile.exists());
+        /*
+         * 解析srv/ip4p，修改tempFile文件中地址和端口，解决内核模式无法使用srv/ip4p的问题
+         */
+        //1.读取文件内容：将文件内容读入内存。
+        List<String> lines = Files.readAllLines(tempFile.toPath());
+        for (int i = 0; i < lines.size(); i++) {
+            String lineStr = lines.get(i);
+            if(lineStr.startsWith("Endpoint")||lineStr.startsWith("endpoint")){
+                //2.修改文件内容：对读入的内容进行所需的修改。
+                lineStr = replaceSrvAndIp4p(lineStr);
+            }
+            lines.set(i, lineStr);
+        }
+        //3.写回文件内容：将修改后的内容写回文件
+        Files.write(tempFile.toPath(), lines);
         final int result = rootShell.run(null, command);
         // noinspection ResultOfMethodCallIgnored
         tempFile.delete();

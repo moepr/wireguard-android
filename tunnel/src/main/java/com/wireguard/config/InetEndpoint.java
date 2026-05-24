@@ -5,12 +5,23 @@
 
 package com.wireguard.config;
 
+import android.util.Log;
+
 import com.wireguard.util.NonNullForAll;
 
+import org.xbill.DNS.Lookup;
+import org.xbill.DNS.Record;
+import org.xbill.DNS.SRVRecord;
+import org.xbill.DNS.SimpleResolver;
+import org.xbill.DNS.TextParseException;
+import org.xbill.DNS.Type;
+
 import java.net.Inet4Address;
+import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.net.URL;
 import java.net.UnknownHostException;
 import java.time.Duration;
 import java.time.Instant;
@@ -46,6 +57,26 @@ public final class InetEndpoint {
     public static InetEndpoint parse(final String endpoint) throws ParseException {
         if (FORBIDDEN_CHARACTERS.matcher(endpoint).find())
             throw new ParseException(InetEndpoint.class, endpoint, "Forbidden characters");
+        if(endpoint.contains("._tcp.")||endpoint.contains("._udp.")){
+            //srv格式使用URL解析
+            URL url;
+            try {
+                url = new URL("http://" + endpoint);
+            } catch (final Exception e) {
+                throw new ParseException(InetEndpoint.class, endpoint, e);
+            }
+            if (url.getPort() < 0 || url.getPort() > 65535)
+                //无法解析对端错误
+                throw new ParseException(InetEndpoint.class, endpoint, "Missing/invalid port number");
+            try {
+                InetAddresses.parse(url.getHost());
+                // Parsing ths host as a numeric address worked, so we don't need to do DNS lookups.
+                return new InetEndpoint(url.getHost(), true, url.getPort());
+            } catch (final ParseException ignored) {
+                // Failed to parse the host as a numeric address, so it must be a DNS hostname/FQDN.
+                return new InetEndpoint(url.getHost(), false, url.getPort());
+            }
+        }
         final URI uri;
         try {
             uri = new URI("wg://" + endpoint);
@@ -53,6 +84,7 @@ public final class InetEndpoint {
             throw new ParseException(InetEndpoint.class, endpoint, e);
         }
         if (uri.getPort() < 0 || uri.getPort() > 65535)
+            //无法解析对端错误
             throw new ParseException(InetEndpoint.class, endpoint, "Missing/invalid port number");
         try {
             InetAddresses.parse(uri.getHost());
@@ -94,18 +126,78 @@ public final class InetEndpoint {
             //TODO(zx2c4): Implement a real timeout mechanism using DNS TTL
             if (Duration.between(lastResolution, Instant.now()).toMinutes() > 1) {
                 try {
-                    // Prefer v4 endpoints over v6 to work around DNS64 and IPv6 NAT issues.
-                    final InetAddress[] candidates = InetAddress.getAllByName(host);
-                    InetAddress address = candidates[0];
-                    for (final InetAddress candidate : candidates) {
-                        if (candidate instanceof Inet4Address) {
-                            address = candidate;
-                            break;
+                    Log.i("getResolved","==============host:"+host);
+                    Log.i("getResolved","==============port:"+port);
+                    //添加srv和ip4p支持
+                    String realHostIp = "0.0.0.0";
+                    int realPort = port;
+                    if(port == 0 && (host.contains("._tcp.") || host.contains("._udp."))){
+                        //走解析srv逻辑
+                        Log.i("getResolved","==============走解析srv逻辑:"+host);
+                        SimpleResolver resolver = new SimpleResolver("114.114.114.114");
+                        resolver.setPort(53);
+                        Lookup lookup = new Lookup(host, Type.SRV);
+                        lookup.setResolver(resolver);
+                        final Record[] records = lookup.run();
+                        Log.i("getResolved","==============走解析srv逻辑 records:"+records);
+                        if (records != null) {
+                            Record record = records[0];
+                            if (record instanceof SRVRecord) {
+                                SRVRecord srvRecord = (SRVRecord) record;
+                                String target = srvRecord.getTarget().toString();
+                                int port = srvRecord.getPort();
+                                final InetAddress[] candidates = InetAddress.getAllByName(target);
+                                InetAddress address = candidates[0];
+                                for (final InetAddress candidate : candidates) {
+                                    if (candidate instanceof Inet4Address) {
+                                        address = candidate;
+                                        break;
+                                    }
+                                }
+                                realPort = port;
+                                realHostIp = address.getHostAddress();
+                            }
+                        } else {
+                            //System.out.println("No SRV records found for " + host);
+                            realPort = 0;
+                            realHostIp = "0.0.0.0";
+                        }
+                    } else {
+                        Log.i("getResolved","==============走解析ip4p逻辑:"+host);
+                        // Prefer v4 endpoints over v6 to work around DNS64 and IPv6 NAT issues.
+                        final InetAddress[] candidates = InetAddress.getAllByName(host);
+                        InetAddress address = candidates[0];
+                        for (final InetAddress candidate : candidates) {
+                            if (candidate instanceof Inet6Address) {
+                                address = candidate;
+                                break;
+                            }
+                        }
+                        String hostAddress = address.getHostAddress();
+                        if(hostAddress.contains(":") && port==0){
+                            //走解析ip4p逻辑
+                            String[] split = hostAddress.split(":");
+                            int port = Integer.parseInt(split[2], 16);
+                            int ipab = Integer.parseInt(split[3], 16);
+                            int ipcd = Integer.parseInt(split[4], 16);
+                            int ipa = ipab >> 8;
+                            int ipb = ipab & 0xff;
+                            int ipc = ipcd >> 8;
+                            int ipd = ipcd & 0xff;
+                            realPort = port;
+                            realHostIp = ipa+"."+ipb+"."+ipc+"."+ipd;
+                        } else {
+                            realHostIp = address.getHostAddress();
                         }
                     }
-                    resolved = new InetEndpoint(address.getHostAddress(), true, port);
+                    Log.i("getResolved","==============解析结果 host:"+realHostIp+" port:"+realPort);
+                    resolved = new InetEndpoint(realHostIp, true, realPort);
+                    //resolved = new InetEndpoint(address.getHostAddress(), true, port);
                     lastResolution = Instant.now();
                 } catch (final UnknownHostException e) {
+                    resolved = null;
+                } catch (TextParseException e) {
+                    //throw new RuntimeException(e);
                     resolved = null;
                 }
             }
