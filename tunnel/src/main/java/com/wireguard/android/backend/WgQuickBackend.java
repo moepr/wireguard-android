@@ -284,7 +284,7 @@ public final class WgQuickBackend implements Backend {
         Log.i(TAG, "============localTemporaryDir: " + localTemporaryDir);
         File tempFile = new File(localTemporaryDir, tunnel.getName() + ".conf");
 
-        final File tempFile = new File(localTemporaryDir, tunnel.getName() + ".conf");
+        //final File tempFile = new File(localTemporaryDir, tunnel.getName() + ".conf");
         try (final FileOutputStream stream = new FileOutputStream(tempFile, false)) {
             stream.write(config.toWgQuickString().getBytes(StandardCharsets.UTF_8));
         }
