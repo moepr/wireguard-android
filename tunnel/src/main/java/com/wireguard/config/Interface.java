@@ -46,6 +46,7 @@ public final class Interface {
     private final KeyPair keyPair;
     private final Optional<Integer> listenPort;
     private final Optional<Integer> mtu;
+    private final Optional<Integer> handshakeTimeout;
 
     private Interface(final Builder builder) {
         // Defensively copy to ensure immutability even if the Builder is reused.
@@ -57,6 +58,7 @@ public final class Interface {
         keyPair = Objects.requireNonNull(builder.keyPair, "Interfaces must have a private key");
         listenPort = builder.listenPort;
         mtu = builder.mtu;
+        handshakeTimeout = builder.handshakeTimeout;
     }
 
     /**
@@ -92,6 +94,9 @@ public final class Interface {
                 case "mtu":
                     builder.parseMtu(attribute.getValue());
                     break;
+                case "handshaketimeout":
+                    builder.parseHandshakeTimeout(attribute.getValue());
+                    break;
                 case "privatekey":
                     builder.parsePrivateKey(attribute.getValue());
                     break;
@@ -115,7 +120,8 @@ public final class Interface {
                 && includedApplications.equals(other.includedApplications)
                 && keyPair.equals(other.keyPair)
                 && listenPort.equals(other.listenPort)
-                && mtu.equals(other.mtu);
+                && mtu.equals(other.mtu)
+                && handshakeTimeout.equals(other.handshakeTimeout);
     }
 
     /**
@@ -195,16 +201,28 @@ public final class Interface {
         return mtu;
     }
 
+    /**
+     * Returns the handshake timeout in seconds. When the last handshake exceeds this time,
+     * the tunnel will be re-resolved and reconnected.
+     *
+     * @return the handshake timeout in seconds, or {@code Optional.empty()} if none is configured
+     */
+    public Optional<Integer> getHandshakeTimeout() {
+        return handshakeTimeout;
+    }
+
     @Override
     public int hashCode() {
         int hash = 1;
         hash = 31 * hash + addresses.hashCode();
         hash = 31 * hash + dnsServers.hashCode();
+        hash = 31 * hash + dnsSearchDomains.hashCode();
         hash = 31 * hash + excludedApplications.hashCode();
         hash = 31 * hash + includedApplications.hashCode();
         hash = 31 * hash + keyPair.hashCode();
         hash = 31 * hash + listenPort.hashCode();
         hash = 31 * hash + mtu.hashCode();
+        hash = 31 * hash + handshakeTimeout.hashCode();
         return hash;
     }
 
@@ -244,6 +262,7 @@ public final class Interface {
             sb.append("IncludedApplications = ").append(Attribute.join(includedApplications)).append('\n');
         listenPort.ifPresent(lp -> sb.append("ListenPort = ").append(lp).append('\n'));
         mtu.ifPresent(m -> sb.append("MTU = ").append(m).append('\n'));
+        handshakeTimeout.ifPresent(h -> sb.append("HandshakeTimeout = ").append(h).append('\n'));
         sb.append("PrivateKey = ").append(keyPair.getPrivateKey().toBase64()).append('\n');
         return sb.toString();
     }
@@ -279,6 +298,8 @@ public final class Interface {
         private Optional<Integer> listenPort = Optional.empty();
         // Defaults to not present.
         private Optional<Integer> mtu = Optional.empty();
+        // Defaults to not present.
+        private Optional<Integer> handshakeTimeout = Optional.empty();
 
         public Builder addAddress(final InetNetwork address) {
             addresses.add(address);
@@ -399,6 +420,14 @@ public final class Interface {
             }
         }
 
+        public Builder parseHandshakeTimeout(final String handshakeTimeout) throws BadConfigException {
+            try {
+                return setHandshakeTimeout(Integer.parseInt(handshakeTimeout));
+            } catch (final NumberFormatException e) {
+                throw new BadConfigException(Section.INTERFACE, Location.HANDSHAKE_TIMEOUT, handshakeTimeout, e);
+            }
+        }
+
         public Builder setKeyPair(final KeyPair keyPair) {
             this.keyPair = keyPair;
             return this;
@@ -417,6 +446,14 @@ public final class Interface {
                 throw new BadConfigException(Section.INTERFACE, Location.LISTEN_PORT,
                         Reason.INVALID_VALUE, String.valueOf(mtu));
             this.mtu = mtu == 0 ? Optional.empty() : Optional.of(mtu);
+            return this;
+        }
+
+        public Builder setHandshakeTimeout(final int handshakeTimeout) throws BadConfigException {
+            if (handshakeTimeout < 0)
+                throw new BadConfigException(Section.INTERFACE, Location.HANDSHAKE_TIMEOUT,
+                        Reason.INVALID_VALUE, String.valueOf(handshakeTimeout));
+            this.handshakeTimeout = handshakeTimeout == 0 ? Optional.empty() : Optional.of(handshakeTimeout);
             return this;
         }
     }

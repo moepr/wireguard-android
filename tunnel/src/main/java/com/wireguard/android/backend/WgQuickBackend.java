@@ -20,16 +20,15 @@ import com.wireguard.util.NonNullForAll;
 import org.xbill.DNS.Lookup;
 import org.xbill.DNS.Record;
 import org.xbill.DNS.SRVRecord;
+import org.xbill.DNS.TXTRecord;
 import org.xbill.DNS.SimpleResolver;
 import org.xbill.DNS.Type;
 
 import java.io.File;
 import java.io.FileOutputStream;
 import java.net.Inet4Address;
-import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
-import java.time.Instant;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -40,7 +39,11 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 import androidx.annotation.Nullable;
 
@@ -57,6 +60,7 @@ public final class WgQuickBackend implements Backend {
     private final Map<Tunnel, Config> runningConfigs = new HashMap<>();
     private final ToolsInstaller toolsInstaller;
     private boolean multipleTunnels;
+    @Nullable private ScheduledExecutorService handshakeMonitor;
 
     public WgQuickBackend(final Context context, final RootShell rootShell, final ToolsInstaller toolsInstaller) {
         localTemporaryDir = new File(context.getCacheDir(), "tmp");
@@ -194,7 +198,7 @@ public final class WgQuickBackend implements Backend {
      * @throws Exception
      */
     private static String replaceSrvAndIp4p(String endpointLine) throws Exception {
-        //添加srv和ip4p支持
+        //添加srv和txt转发支持
         Log.i(TAG, "============endpointLine: " + endpointLine);
         String endpoint = endpointLine.replace("Endpoint", "").trim();
         endpoint = endpoint.replace("endpoint", "").trim();
@@ -239,33 +243,58 @@ public final class WgQuickBackend implements Backend {
                 } else {
                     realHostIp = "0.0.0.0";
                 }
+            } else if(host.contains(".txt.")){
+                //走解析txt逻辑，txt记录格式为 ip:端口
+                //支持泛解析：*替换为当前Unix时间戳，如 *.xxx.txt.example.com -> 1718400000.xxx.txt.example.com
+                String txtHost;
+                if (host.contains("*")) {
+                    txtHost = host.replace("*", String.valueOf(System.currentTimeMillis() / 1000));
+                    Log.i(TAG, "============endpointLine 走解析txt泛解析 host:"+host+" -> "+txtHost);
+                } else {
+                    txtHost = host;
+                }
+                Log.i(TAG, "============endpointLine 走解析txt逻辑: " + txtHost);
+                SimpleResolver resolver = new SimpleResolver("223.5.5.5");
+                resolver.setPort(53);
+                final Lookup lookup = new Lookup(txtHost, Type.TXT);
+                lookup.setResolver(resolver);
+                final Record[] records = lookup.run();
+                Log.i(TAG, "============endpointLine txt records: " + records);
+                if (records != null && records.length > 0) {
+                    final Record record = records[0];
+                    if (record instanceof final TXTRecord txtRecord) {
+                        @SuppressWarnings("unchecked")
+                        final List<String> txtStrings = txtRecord.getStrings();
+                        Log.i(TAG, "============endpointLine txtStrings: " + txtStrings);
+                        if (txtStrings != null && !txtStrings.isEmpty()) {
+                            final String txtValue = txtStrings.get(0);
+                            Log.i(TAG, "============endpointLine txtValue: " + txtValue);
+                            //txt记录格式为 ip:端口，如 1.2.3.4:51820
+                            final int colonIndex = txtValue.lastIndexOf(':');
+                            if (colonIndex > 0) {
+                                final String txtIp = txtValue.substring(0, colonIndex);
+                                final String txtPort = txtValue.substring(colonIndex + 1);
+                                // 简单验证ip格式
+                                InetAddress.getByName(txtIp);
+                                realHostIp = txtIp;
+                                realPort = Integer.parseInt(txtPort);
+                            }
+                        }
+                    }
+                } else {
+                    realHostIp = "0.0.0.0";
+                }
             } else {
-                //走解析ip4p逻辑
+                // 普通DNS解析，默认优先选择v4地址
                 final InetAddress[] candidates = InetAddress.getAllByName(host);
                 InetAddress address = candidates[0];
                 for (final InetAddress candidate : candidates) {
-                    if (candidate instanceof Inet6Address) {
+                    if (candidate instanceof Inet4Address) {
                         address = candidate;
                         break;
                     }
                 }
-                String ip4p = address.getHostAddress();
-                Log.i(TAG, "============endpointLine ip4p: " + ip4p);
-                String[] split = ip4p.split(":");
-                realPort = Integer.parseInt(split[2], 16);
-                int ipab = Integer.parseInt(split[3], 16);
-                int ipcd = Integer.parseInt(split[4], 16);
-                int ipa = ipab >> 8;
-                int ipb = ipab & 0xff;
-                int ipc = ipcd >> 8;
-                int ipd = ipcd & 0xff;
-                Log.i(TAG, "============endpointLine ipab: " + ipab);
-                Log.i(TAG, "============endpointLine ipcd: " + ipcd);
-                Log.i(TAG, "============endpointLine ipa: " + ipa);
-                Log.i(TAG, "============endpointLine ipb: " + ipb);
-                Log.i(TAG, "============endpointLine ipc: " + ipc);
-                Log.i(TAG, "============endpointLine ipd: " + ipd);
-                realHostIp = ipa+"."+ipb+"."+ipc+"."+ipd;
+                realHostIp = address.getHostAddress();
             }
             Log.i(TAG, "============endpointLine realHostIp: " + realHostIp);
             Log.i(TAG, "============endpointLine realPort: " + realPort);
@@ -295,7 +324,7 @@ public final class WgQuickBackend implements Backend {
         Log.i(TAG, "============tempFile: " + tempFile);
         Log.i(TAG, "============tempFile exists: " + tempFile.exists());
         /*
-         * 解析srv/ip4p，修改tempFile文件中地址和端口，解决内核模式无法使用srv/ip4p的问题
+         * 解析srv/txt，修改tempFile文件中地址和端口，解决内核模式无法使用srv/txt的问题
          */
         //1.读取文件内容：将文件内容读入内存。
         List<String> lines = Files.readAllLines(tempFile.toPath());
@@ -315,11 +344,71 @@ public final class WgQuickBackend implements Backend {
         if (result != 0)
             throw new BackendException(Reason.WG_QUICK_CONFIG_ERROR_CODE, result);
 
-        if (state == State.UP)
+        if (state == State.UP) {
             runningConfigs.put(tunnel, config);
-        else
+            tunnel.onStateChange(state);
+            // 隧道开启成功后启动握手超时监视器
+            startHandshakeMonitor(tunnel, config);
+        } else {
+            // 关闭隧道时停止握手超时监视器
+            stopHandshakeMonitor();
             runningConfigs.remove(tunnel);
+            tunnel.onStateChange(state);
+        }
+    }
 
-        tunnel.onStateChange(state);
+    private void startHandshakeMonitor(final Tunnel tunnel, final Config config) {
+        final Optional<Integer> timeoutOpt = config.getInterface().getHandshakeTimeout();
+        if (timeoutOpt.isEmpty())
+            return;
+        final long timeoutSec = timeoutOpt.get();
+        if (timeoutSec <= 0)
+            return;
+        stopHandshakeMonitor();
+        handshakeMonitor = Executors.newSingleThreadScheduledExecutor(r -> {
+            final Thread t = new Thread(r, "WgHandshakeMonitor");
+            t.setDaemon(true);
+            return t;
+        });
+        handshakeMonitor.scheduleWithFixedDelay(() -> {
+            try {
+                if (getState(tunnel) != State.UP)
+                    return;
+                final Statistics stats = getStatistics(tunnel);
+                final long now = System.currentTimeMillis();
+                boolean needReconnect = false;
+                for (final Key key : stats.peers()) {
+                    final Statistics.PeerStats peerStats = stats.peer(key);
+                    if (peerStats == null) continue;
+                    final long lastHandshake = peerStats.latestHandshakeEpochMillis();
+                    if (lastHandshake > 0) {
+                        final long elapsed = now - lastHandshake;
+                        if (elapsed > timeoutSec * 1000L) {
+                            Log.w(TAG, "Handshake timeout for peer " + key.toBase64()
+                                    + " (elapsed=" + (elapsed / 1000) + "s, timeout=" + timeoutSec + "s). Reconnecting...");
+                            needReconnect = true;
+                        }
+                    }
+                }
+                if (needReconnect) {
+                    Log.i(TAG, "Performing handshake timeout reconnection for " + tunnel.getName());
+                    try {
+                        setState(tunnel, State.DOWN, null);
+                        setState(tunnel, State.UP, config);
+                    } catch (final Exception e) {
+                        Log.w(TAG, "Handshake timeout reconnection failed", e);
+                    }
+                }
+            } catch (final Exception e) {
+                Log.w(TAG, "Handshake monitor error", e);
+            }
+        }, timeoutSec, Math.max(timeoutSec / 2, 10), TimeUnit.SECONDS);
+    }
+
+    private void stopHandshakeMonitor() {
+        if (handshakeMonitor != null) {
+            handshakeMonitor.shutdownNow();
+            handshakeMonitor = null;
+        }
     }
 }

@@ -12,12 +12,12 @@ import com.wireguard.util.NonNullForAll;
 import org.xbill.DNS.Lookup;
 import org.xbill.DNS.Record;
 import org.xbill.DNS.SRVRecord;
+import org.xbill.DNS.TXTRecord;
 import org.xbill.DNS.SimpleResolver;
 import org.xbill.DNS.TextParseException;
 import org.xbill.DNS.Type;
 
 import java.net.Inet4Address;
-import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -25,6 +25,7 @@ import java.net.URL;
 import java.net.UnknownHostException;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.regex.Pattern;
 
@@ -57,8 +58,8 @@ public final class InetEndpoint {
     public static InetEndpoint parse(final String endpoint) throws ParseException {
         if (FORBIDDEN_CHARACTERS.matcher(endpoint).find())
             throw new ParseException(InetEndpoint.class, endpoint, "Forbidden characters");
-        if(endpoint.contains("._tcp.")||endpoint.contains("._udp.")){
-            //srv格式使用URL解析
+        if(endpoint.contains("._tcp.")||endpoint.contains("._udp.")||endpoint.contains(".txt.")){
+            //srv/txt格式使用URL解析（URL比URI容忍特殊字符如*）
             URL url;
             try {
                 url = new URL("http://" + endpoint);
@@ -113,6 +114,16 @@ public final class InetEndpoint {
     }
 
     /**
+     * 强制清除DNS解析缓存，下次调用getResolved()时会重新解析域名
+     */
+    public void resetResolution() {
+        synchronized (lock) {
+            lastResolution = Instant.EPOCH;
+            resolved = null;
+        }
+    }
+
+    /**
      * Generate an {@code InetEndpoint} instance with the same port and the host resolved using DNS
      * to a numeric address. If the host is already numeric, the existing instance may be returned.
      * Because this function may perform network I/O, it must not be called from the main thread.
@@ -128,13 +139,13 @@ public final class InetEndpoint {
                 try {
                     Log.i("getResolved","==============host:"+host);
                     Log.i("getResolved","==============port:"+port);
-                    //添加srv和ip4p支持
+                    //添加srv和txt转发支持
                     String realHostIp = "0.0.0.0";
                     int realPort = port;
                     if(port == 0 && (host.contains("._tcp.") || host.contains("._udp."))){
                         //走解析srv逻辑
                         Log.i("getResolved","==============走解析srv逻辑:"+host);
-                        SimpleResolver resolver = new SimpleResolver("114.114.114.114");
+                        SimpleResolver resolver = new SimpleResolver("223.5.5.5");
                         resolver.setPort(53);
                         Lookup lookup = new Lookup(host, Type.SRV);
                         lookup.setResolver(resolver);
@@ -162,33 +173,58 @@ public final class InetEndpoint {
                             realPort = 0;
                             realHostIp = "0.0.0.0";
                         }
+                    } else if(port == 0 && host.contains(".txt.")){
+                        //走解析txt逻辑，txt记录格式为 ip:端口
+                        //支持泛解析：*替换为当前Unix时间戳，如 *.xxx.txt.example.com -> 1718400000.xxx.txt.example.com
+                        String txtHost;
+                        if (host.contains("*")) {
+                            txtHost = host.replace("*", String.valueOf(Instant.now().getEpochSecond()));
+                            Log.i("getResolved","==============走解析txt泛解析 host:"+host+" -> "+txtHost);
+                        } else {
+                            txtHost = host;
+                        }
+                        Log.i("getResolved","==============走解析txt逻辑:"+txtHost);
+                        SimpleResolver resolver = new SimpleResolver("223.5.5.5");
+                        resolver.setPort(53);
+                        Lookup lookup = new Lookup(txtHost, Type.TXT);
+                        lookup.setResolver(resolver);
+                        final Record[] records = lookup.run();
+                        Log.i("getResolved","==============走解析txt逻辑 records:"+records);
+                        if (records != null && records.length > 0) {
+                            Record record = records[0];
+                            if (record instanceof TXTRecord) {
+                                TXTRecord txtRecord = (TXTRecord) record;
+                                @SuppressWarnings("unchecked")
+                                List<String> txtStrings = txtRecord.getStrings();
+                                if (txtStrings != null && !txtStrings.isEmpty()) {
+                                    String txtValue = txtStrings.get(0);
+                                    Log.i("getResolved","==============走解析txt逻辑 txtValue:"+txtValue);
+                                    //txt记录格式为 ip:端口，如 1.2.3.4:51820
+                                    int colonIndex = txtValue.lastIndexOf(':');
+                                    if (colonIndex > 0) {
+                                        String txtIp = txtValue.substring(0, colonIndex);
+                                        String txtPort = txtValue.substring(colonIndex + 1);
+                                        InetAddresses.parse(txtIp); // 验证ip格式
+                                        realHostIp = txtIp;
+                                        realPort = Integer.parseInt(txtPort);
+                                    }
+                                }
+                            }
+                        } else {
+                            realPort = 0;
+                            realHostIp = "0.0.0.0";
+                        }
                     } else {
-                        Log.i("getResolved","==============走解析ip4p逻辑:"+host);
-                        // Prefer v4 endpoints over v6 to work around DNS64 and IPv6 NAT issues.
+                        // 普通DNS解析，默认优先选择v4地址
                         final InetAddress[] candidates = InetAddress.getAllByName(host);
                         InetAddress address = candidates[0];
                         for (final InetAddress candidate : candidates) {
-                            if (candidate instanceof Inet6Address) {
+                            if (candidate instanceof Inet4Address) {
                                 address = candidate;
                                 break;
                             }
                         }
-                        String hostAddress = address.getHostAddress();
-                        if(hostAddress.contains(":") && port==0){
-                            //走解析ip4p逻辑
-                            String[] split = hostAddress.split(":");
-                            int port = Integer.parseInt(split[2], 16);
-                            int ipab = Integer.parseInt(split[3], 16);
-                            int ipcd = Integer.parseInt(split[4], 16);
-                            int ipa = ipab >> 8;
-                            int ipb = ipab & 0xff;
-                            int ipc = ipcd >> 8;
-                            int ipd = ipcd & 0xff;
-                            realPort = port;
-                            realHostIp = ipa+"."+ipb+"."+ipc+"."+ipd;
-                        } else {
-                            realHostIp = address.getHostAddress();
-                        }
+                        realHostIp = address.getHostAddress();
                     }
                     Log.i("getResolved","==============解析结果 host:"+realHostIp+" port:"+realPort);
                     resolved = new InetEndpoint(realHostIp, true, realPort);

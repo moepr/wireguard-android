@@ -25,9 +25,12 @@ import com.wireguard.util.NonNullForAll;
 
 import java.net.InetAddress;
 import java.util.Collections;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
@@ -48,6 +51,7 @@ public final class GoBackend implements Backend {
     @Nullable private Config currentConfig;
     @Nullable private Tunnel currentTunnel;
     private int currentTunnelHandle = -1;
+    @Nullable private ScheduledExecutorService handshakeMonitor;
 
     /**
      * Public constructor for GoBackend.
@@ -348,7 +352,13 @@ public final class GoBackend implements Backend {
 
             service.protect(wgGetSocketV4(currentTunnelHandle));
             service.protect(wgGetSocketV6(currentTunnelHandle));
+
+            // 启动握手超时监视器
+            startHandshakeMonitor(tunnel, config);
         } else {
+            // 停止握手超时监视器
+            stopHandshakeMonitor();
+
             if (currentTunnelHandle == -1) {
                 Log.w(TAG, "Tunnel already down");
                 return;
@@ -364,6 +374,60 @@ public final class GoBackend implements Backend {
         }
 
         tunnel.onStateChange(state);
+    }
+
+    private void startHandshakeMonitor(final Tunnel tunnel, final Config config) {
+        final Optional<Integer> timeoutOpt = config.getInterface().getHandshakeTimeout();
+        if (timeoutOpt.isEmpty())
+            return;
+        final long timeoutSec = timeoutOpt.get();
+        if (timeoutSec <= 0)
+            return;
+        stopHandshakeMonitor();
+        handshakeMonitor = Executors.newSingleThreadScheduledExecutor(r -> {
+            final Thread t = new Thread(r, "HandshakeMonitor");
+            t.setDaemon(true);
+            return t;
+        });
+        handshakeMonitor.scheduleWithFixedDelay(() -> {
+            try {
+                final Statistics stats = getStatistics(tunnel);
+                final long now = System.currentTimeMillis();
+                boolean needReconnect = false;
+                for (final Key key : stats.peers()) {
+                    final Statistics.PeerStats peerStats = stats.peer(key);
+                    if (peerStats == null) continue;
+                    final long lastHandshake = peerStats.latestHandshakeEpochMillis();
+                    if (lastHandshake > 0) {
+                        final long elapsed = now - lastHandshake;
+                        if (elapsed > timeoutSec * 1000L) {
+                            Log.w(TAG, "Handshake timeout for peer " + key.toBase64()
+                                    + " (elapsed=" + (elapsed / 1000) + "s, timeout=" + timeoutSec + "s). Reconnecting...");
+                            needReconnect = true;
+                        }
+                    }
+                }
+                if (needReconnect) {
+                    // 重置DNS解析缓存
+                    for (final Peer peer : config.getPeers()) {
+                        peer.getEndpoint().ifPresent(InetEndpoint::resetResolution);
+                    }
+                    // 使用公共API重新连接，会触发新的DNS解析
+                    Log.i(TAG, "Performing handshake timeout reconnection for " + tunnel.getName());
+                    setState(tunnel, State.DOWN, null);
+                    setState(tunnel, State.UP, config);
+                }
+            } catch (final Exception e) {
+                Log.w(TAG, "Handshake monitor error", e);
+            }
+        }, timeoutSec, Math.max(timeoutSec / 2, 10), TimeUnit.SECONDS);
+    }
+
+    private void stopHandshakeMonitor() {
+        if (handshakeMonitor != null) {
+            handshakeMonitor.shutdownNow();
+            handshakeMonitor = null;
+        }
     }
 
     /**
