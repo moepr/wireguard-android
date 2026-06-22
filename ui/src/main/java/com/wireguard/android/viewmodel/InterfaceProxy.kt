@@ -54,6 +54,13 @@ class InterfaceProxy : BaseObservable, Parcelable {
         }
 
     @get:Bindable
+    var handshakeTimeout: String = ""
+        set(value) {
+            field = value
+            notifyPropertyChanged(BR.handshakeTimeout)
+        }
+
+    @get:Bindable
     var privateKey: String = ""
         set(value) {
             field = value
@@ -76,6 +83,7 @@ class InterfaceProxy : BaseObservable, Parcelable {
         parcel.readStringList(includedApplications)
         listenPort = parcel.readString() ?: ""
         mtu = parcel.readString() ?: ""
+        handshakeTimeout = parcel.readString() ?: ""
         privateKey = parcel.readString() ?: ""
     }
 
@@ -87,6 +95,7 @@ class InterfaceProxy : BaseObservable, Parcelable {
         includedApplications.addAll(other.includedApplications)
         listenPort = other.listenPort.map { it.toString() }.orElse("")
         mtu = other.mtu.map { it.toString() }.orElse("")
+        handshakeTimeout = other.handshakeTimeout.map { it.toString() }.orElse("")
         val keyPair = other.keyPair
         privateKey = keyPair.privateKey.toBase64()
     }
@@ -111,6 +120,7 @@ class InterfaceProxy : BaseObservable, Parcelable {
         if (includedApplications.isNotEmpty()) builder.includeApplications(includedApplications)
         if (listenPort.isNotEmpty()) builder.parseListenPort(listenPort)
         if (mtu.isNotEmpty()) builder.parseMtu(mtu)
+        if (handshakeTimeout.isNotEmpty()) builder.parseHandshakeTimeout(handshakeTimeout)
         if (privateKey.isNotEmpty()) builder.parsePrivateKey(privateKey)
         return builder.build()
     }
@@ -122,6 +132,7 @@ class InterfaceProxy : BaseObservable, Parcelable {
         dest.writeStringList(includedApplications)
         dest.writeString(listenPort)
         dest.writeString(mtu)
+        dest.writeString(handshakeTimeout)
         dest.writeString(privateKey)
     }
 
