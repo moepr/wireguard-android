@@ -1,6 +1,11 @@
 @file:Suppress("UnstableApiUsage")
 
+import java.time.LocalDate
+import java.time.format.DateTimeFormatter
+
 val pkg: String = providers.gradleProperty("wireguardPackageName").get()
+val verName: String = providers.gradleProperty("wireguardVersionName").get()
+val buildDate: String = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyyMMdd"))
 
 plugins {
     alias(libs.plugins.android.application)
@@ -19,7 +24,7 @@ android {
         applicationId = pkg
         minSdk = 24
         versionCode = providers.gradleProperty("wireguardVersionCode").get().toInt()
-        versionName = providers.gradleProperty("wireguardVersionName").get()
+        versionName = verName
         buildConfigField("int", "MIN_SDK_VERSION", minSdk.toString())
     }
     compileOptions {
@@ -57,6 +62,10 @@ android {
         warning += "MissingTranslation"
         warning += "ImpliedQuantity"
     }
+}
+
+base {
+    archivesName = "wireguard-android-${verName}-${buildDate}"
 }
 
 dependencies {
