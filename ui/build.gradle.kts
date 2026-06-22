@@ -31,7 +31,7 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
-            proguardFiles("proguard-android-optimize.txt")
+            proguardFiles("proguard-android-optimize.txt", "proguard-rules.pro")
             packaging {
                 resources {
                     excludes += "DebugProbesKt.bin"
