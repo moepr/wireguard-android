@@ -279,6 +279,30 @@
                         app:constraint_referenced_ids="listen_port_text,mtu_text" />
 
                     <TextView
+                        android:id="@+id/handshake_timeout_label"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:labelFor="@+id/handshake_timeout_text"
+                        android:text="@string/handshake_timeout"
+                        android:visibility="@{config.interface.handshakeTimeout.isPresent() ? android.view.View.VISIBLE : android.view.View.GONE}"
+                        app:layout_constraintStart_toStartOf="parent"
+                        app:layout_constraintTop_toBottomOf="@+id/listen_port_mtu_barrier" />
+
+                    <TextView
+                        android:id="@+id/handshake_timeout_text"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:contentDescription="@string/handshake_timeout"
+                        android:onClick="@{ClipboardUtils::copyTextView}"
+                        android:text="@{config.interface.handshakeTimeout}"
+                        android:textAppearance="?attr/textAppearanceBodyLarge"
+                        android:visibility="@{config.interface.handshakeTimeout.isPresent() ? android.view.View.VISIBLE : android.view.View.GONE}"
+                        app:layout_constraintStart_toStartOf="parent"
+                        app:layout_constraintTop_toBottomOf="@+id/handshake_timeout_label"
+                        tools:text="180" />
+
+                    <TextView
                         android:id="@+id/applications_label"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
@@ -287,7 +311,7 @@
                         android:text="@string/applications"
                         android:visibility="@{config.interface.includedApplications.isEmpty() &amp;&amp; config.interface.excludedApplications.isEmpty() ? android.view.View.GONE : android.view.View.VISIBLE}"
                         app:layout_constraintStart_toStartOf="parent"
-                        app:layout_constraintTop_toBottomOf="@+id/listen_port_mtu_barrier" />
+                        app:layout_constraintTop_toBottomOf="@+id/handshake_timeout_text" />
 
                     <TextView
                         android:id="@+id/applications_text"

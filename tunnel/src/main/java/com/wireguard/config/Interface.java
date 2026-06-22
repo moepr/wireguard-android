@@ -262,7 +262,8 @@ public final class Interface {
             sb.append("IncludedApplications = ").append(Attribute.join(includedApplications)).append('\n');
         listenPort.ifPresent(lp -> sb.append("ListenPort = ").append(lp).append('\n'));
         mtu.ifPresent(m -> sb.append("MTU = ").append(m).append('\n'));
-        handshakeTimeout.ifPresent(h -> sb.append("HandshakeTimeout = ").append(h).append('\n'));
+        // HandshakeTimeout 是 Android 后端(WgQuickBackend/GoBackend)专用参数，
+        // 不由 wg-quick 原生支持，不写入 wg-quick 配置文件
         sb.append("PrivateKey = ").append(keyPair.getPrivateKey().toBase64()).append('\n');
         return sb.toString();
     }
