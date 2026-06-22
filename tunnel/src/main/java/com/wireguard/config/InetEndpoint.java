@@ -204,7 +204,13 @@ public final class InetEndpoint {
                                     if (colonIndex > 0) {
                                         String txtIp = txtValue.substring(0, colonIndex);
                                         String txtPort = txtValue.substring(colonIndex + 1);
-                                        InetAddresses.parse(txtIp); // 验证ip格式
+                                        try {
+                                            InetAddresses.parse(txtIp); // 验证ip格式
+                                        } catch (Exception e) {
+                                            Log.w("InetEndpoint", "TXT record IP format error: " + txtIp, e);
+                                            realHostIp = "0.0.0.0";
+                                            realPort = 0;
+                                        }
                                         realHostIp = txtIp;
                                         realPort = Integer.parseInt(txtPort);
                                     }
