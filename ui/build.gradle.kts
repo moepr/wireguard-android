@@ -46,7 +46,6 @@ android {
             }
         }
         debug {
-            applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"
         }
         create("googleplay") {
