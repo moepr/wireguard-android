@@ -9,23 +9,8 @@ import android.util.Log;
 
 import com.wireguard.util.NonNullForAll;
 
-import org.xbill.DNS.Lookup;
-import org.xbill.DNS.Record;
-import org.xbill.DNS.SRVRecord;
-import org.xbill.DNS.TXTRecord;
-import org.xbill.DNS.SimpleResolver;
-import org.xbill.DNS.TextParseException;
-import org.xbill.DNS.Type;
-
-import java.net.Inet4Address;
-import java.net.InetAddress;
-import java.net.URI;
-import java.net.URISyntaxException;
-import java.net.URL;
-import java.net.UnknownHostException;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.List;
 import java.util.Optional;
 import java.util.regex.Pattern;
 
@@ -39,8 +24,11 @@ import androidx.annotation.Nullable;
  */
 @NonNullForAll
 public final class InetEndpoint {
+    private static final String TAG = "InetEndpoint";
     private static final Pattern BARE_IPV6 = Pattern.compile("^[^\\[\\]]*:[^\\[\\]]*");
     private static final Pattern FORBIDDEN_CHARACTERS = Pattern.compile("[/?#]");
+    /** DNS 成功结果缓存时长 */
+    private static final long RESOLUTION_CACHE_SECONDS = 60;
 
     private final String host;
     private final boolean isResolved;
@@ -56,44 +44,68 @@ public final class InetEndpoint {
     }
 
     public static InetEndpoint parse(final String endpoint) throws ParseException {
+        if (endpoint == null || endpoint.isEmpty())
+            throw new ParseException(InetEndpoint.class, endpoint == null ? "" : endpoint,
+                    "Missing/invalid port number");
         if (FORBIDDEN_CHARACTERS.matcher(endpoint).find())
             throw new ParseException(InetEndpoint.class, endpoint, "Forbidden characters");
-        if(endpoint.contains("._tcp.")||endpoint.contains("._udp.")||endpoint.contains(".txt.")){
-            //srv/txt格式使用URL解析（URL比URI容忍特殊字符如*）
-            URL url;
-            try {
-                url = new URL("http://" + endpoint);
-            } catch (final Exception e) {
-                throw new ParseException(InetEndpoint.class, endpoint, e);
-            }
-            if (url.getPort() < 0 || url.getPort() > 65535)
-                //无法解析对端错误
-                throw new ParseException(InetEndpoint.class, endpoint, "Missing/invalid port number");
-            try {
-                InetAddresses.parse(url.getHost());
-                // Parsing ths host as a numeric address worked, so we don't need to do DNS lookups.
-                return new InetEndpoint(url.getHost(), true, url.getPort());
-            } catch (final ParseException ignored) {
-                // Failed to parse the host as a numeric address, so it must be a DNS hostname/FQDN.
-                return new InetEndpoint(url.getHost(), false, url.getPort());
-            }
-        }
-        final URI uri;
-        try {
-            uri = new URI("wg://" + endpoint);
-        } catch (final URISyntaxException e) {
-            throw new ParseException(InetEndpoint.class, endpoint, e);
-        }
-        if (uri.getPort() < 0 || uri.getPort() > 65535)
-            //无法解析对端错误
+
+        final String trimmed = endpoint.trim();
+        final int lastColon = trimmed.lastIndexOf(':');
+        if (lastColon <= 0 || lastColon == trimmed.length() - 1)
             throw new ParseException(InetEndpoint.class, endpoint, "Missing/invalid port number");
+
+        String hostPart = trimmed.substring(0, lastColon).trim();
+        final String portPart = trimmed.substring(lastColon + 1).trim();
+        if (hostPart.isEmpty() || portPart.isEmpty())
+            throw new ParseException(InetEndpoint.class, endpoint, "Missing/invalid port number");
+
+        // 端口只允许数字
+        for (int i = 0; i < portPart.length(); i++) {
+            if (!Character.isDigit(portPart.charAt(i)))
+                throw new ParseException(InetEndpoint.class, endpoint, "Missing/invalid port number");
+        }
+
+        // [ipv6]:port
+        if (hostPart.startsWith("[") && hostPart.endsWith("]") && hostPart.length() >= 2)
+            hostPart = hostPart.substring(1, hostPart.length() - 1).trim();
+
+        if (hostPart.isEmpty())
+            throw new ParseException(InetEndpoint.class, endpoint, "Missing/invalid port number");
+
+        // 裸 IPv6（无方括号且含多个冒号）无法可靠拆端口
+        if (hostPart.indexOf(':') >= 0) {
+            try {
+                InetAddresses.parse(hostPart);
+            } catch (final ParseException e) {
+                throw new ParseException(InetEndpoint.class, endpoint, "Missing/invalid port number");
+            }
+        }
+
+        // 主机名内不允许空白
+        for (int i = 0; i < hostPart.length(); i++) {
+            if (Character.isWhitespace(hostPart.charAt(i)))
+                throw new ParseException(InetEndpoint.class, endpoint, "Forbidden characters");
+        }
+
+        final int parsedPort;
         try {
-            InetAddresses.parse(uri.getHost());
-            // Parsing ths host as a numeric address worked, so we don't need to do DNS lookups.
-            return new InetEndpoint(uri.getHost(), true, uri.getPort());
+            parsedPort = Integer.parseInt(portPart);
+        } catch (final NumberFormatException e) {
+            throw new ParseException(InetEndpoint.class, endpoint, "Missing/invalid port number");
+        }
+        if (parsedPort < 0 || parsedPort > 65535)
+            throw new ParseException(InetEndpoint.class, endpoint, "Missing/invalid port number");
+
+        // 去掉域名末尾点，便于统一比较与解析
+        while (hostPart.endsWith(".") && hostPart.length() > 1)
+            hostPart = hostPart.substring(0, hostPart.length() - 1);
+
+        try {
+            InetAddresses.parse(hostPart);
+            return new InetEndpoint(hostPart, true, parsedPort);
         } catch (final ParseException ignored) {
-            // Failed to parse the host as a numeric address, so it must be a DNS hostname/FQDN.
-            return new InetEndpoint(uri.getHost(), false, uri.getPort());
+            return new InetEndpoint(hostPart, false, parsedPort);
         }
     }
 
@@ -131,116 +143,28 @@ public final class InetEndpoint {
      * @return the resolved endpoint, or {@link Optional#empty()}
      */
     public Optional<InetEndpoint> getResolved() {
-        if (isResolved)
+        if (isResolved) {
+            // 数值地址也拒绝明显无效的 0.0.0.0/:: 与端口 0，避免用户态静默连黑洞
+            if (port <= 0 || "0.0.0.0".equals(host) || "::".equals(host)
+                    || "0:0:0:0:0:0:0:0".equals(host))
+                return Optional.empty();
             return Optional.of(this);
+        }
         synchronized (lock) {
-            //TODO(zx2c4): Implement a real timeout mechanism using DNS TTL
-            if (Duration.between(lastResolution, Instant.now()).toMinutes() > 1) {
-                try {
-                    Log.i("getResolved","==============host:"+host);
-                    Log.i("getResolved","==============port:"+port);
-                    //添加srv和txt转发支持
-                    String realHostIp = "0.0.0.0";
-                    int realPort = port;
-                    if(port == 0 && (host.contains("._tcp.") || host.contains("._udp."))){
-                        //走解析srv逻辑
-                        Log.i("getResolved","==============走解析srv逻辑:"+host);
-                        SimpleResolver resolver = new SimpleResolver("223.5.5.5");
-                        resolver.setPort(53);
-                        Lookup lookup = new Lookup(host, Type.SRV);
-                        lookup.setResolver(resolver);
-                        final Record[] records = lookup.run();
-                        Log.i("getResolved","==============走解析srv逻辑 records:"+records);
-                        if (records != null) {
-                            Record record = records[0];
-                            if (record instanceof SRVRecord) {
-                                SRVRecord srvRecord = (SRVRecord) record;
-                                String target = srvRecord.getTarget().toString();
-                                int port = srvRecord.getPort();
-                                final InetAddress[] candidates = InetAddress.getAllByName(target);
-                                InetAddress address = candidates[0];
-                                for (final InetAddress candidate : candidates) {
-                                    if (candidate instanceof Inet4Address) {
-                                        address = candidate;
-                                        break;
-                                    }
-                                }
-                                realPort = port;
-                                realHostIp = address.getHostAddress();
-                            }
-                        } else {
-                            //System.out.println("No SRV records found for " + host);
-                            realPort = 0;
-                            realHostIp = "0.0.0.0";
-                        }
-                    } else if(port == 0 && host.contains(".txt.")){
-                        //走解析txt逻辑，txt记录格式为 ip:端口
-                        //支持泛解析：*替换为当前Unix时间戳，如 *.xxx.txt.example.com -> 1718400000.xxx.txt.example.com
-                        String txtHost;
-                        if (host.contains("*")) {
-                            txtHost = host.replace("*", String.valueOf(Instant.now().getEpochSecond()));
-                            Log.i("getResolved","==============走解析txt泛解析 host:"+host+" -> "+txtHost);
-                        } else {
-                            txtHost = host;
-                        }
-                        Log.i("getResolved","==============走解析txt逻辑:"+txtHost);
-                        SimpleResolver resolver = new SimpleResolver("223.5.5.5");
-                        resolver.setPort(53);
-                        Lookup lookup = new Lookup(txtHost, Type.TXT);
-                        lookup.setResolver(resolver);
-                        final Record[] records = lookup.run();
-                        Log.i("getResolved","==============走解析txt逻辑 records:"+records);
-                        if (records != null && records.length > 0) {
-                            Record record = records[0];
-                            if (record instanceof TXTRecord) {
-                                TXTRecord txtRecord = (TXTRecord) record;
-                                @SuppressWarnings("unchecked")
-                                List<String> txtStrings = txtRecord.getStrings();
-                                if (txtStrings != null && !txtStrings.isEmpty()) {
-                                    String txtValue = txtStrings.get(0);
-                                    Log.i("getResolved","==============走解析txt逻辑 txtValue:"+txtValue);
-                                    //txt记录格式为 ip:端口，如 1.2.3.4:51820
-                                    int colonIndex = txtValue.lastIndexOf(':');
-                                    if (colonIndex > 0) {
-                                        String txtIp = txtValue.substring(0, colonIndex);
-                                        String txtPort = txtValue.substring(colonIndex + 1);
-                                        try {
-                                            InetAddresses.parse(txtIp); // 验证ip格式
-                                        } catch (Exception e) {
-                                            Log.w("InetEndpoint", "TXT record IP format error: " + txtIp, e);
-                                            realHostIp = "0.0.0.0";
-                                            realPort = 0;
-                                        }
-                                        realHostIp = txtIp;
-                                        realPort = Integer.parseInt(txtPort);
-                                    }
-                                }
-                            }
-                        } else {
-                            realPort = 0;
-                            realHostIp = "0.0.0.0";
-                        }
-                    } else {
-                        // 普通DNS解析，默认优先选择v4地址
-                        final InetAddress[] candidates = InetAddress.getAllByName(host);
-                        InetAddress address = candidates[0];
-                        for (final InetAddress candidate : candidates) {
-                            if (candidate instanceof Inet4Address) {
-                                address = candidate;
-                                break;
-                            }
-                        }
-                        realHostIp = address.getHostAddress();
-                    }
-                    Log.i("getResolved","==============解析结果 host:"+realHostIp+" port:"+realPort);
-                    resolved = new InetEndpoint(realHostIp, true, realPort);
-                    //resolved = new InetEndpoint(address.getHostAddress(), true, port);
+            final boolean cacheExpired = lastResolution.equals(Instant.EPOCH)
+                    || Duration.between(lastResolution, Instant.now()).getSeconds() >= RESOLUTION_CACHE_SECONDS;
+            if (cacheExpired) {
+                final Optional<SrvTxtResolver.Result> result = SrvTxtResolver.resolve(host, port);
+                if (result.isPresent() && result.get().isValid()) {
+                    final SrvTxtResolver.Result r = result.get();
+                    Log.i(TAG, "解析成功 " + host + ":" + port + " -> " + r.getHost() + ":" + r.getPort());
+                    resolved = new InetEndpoint(r.getHost(), true, r.getPort());
                     lastResolution = Instant.now();
-                } catch (final UnknownHostException e) {
-                    resolved = null;
-                } catch (TextParseException e) {
-                    //throw new RuntimeException(e);
-                    resolved = null;
+                } else {
+                    // 失败不更新 lastResolution，便于立即重试
+                    // 保留旧 resolved，避免短暂 DNS 抖动导致断连
+                    Log.w(TAG, "解析失败: " + host + ":" + port
+                            + (resolved != null ? "（保留上次成功结果）" : ""));
                 }
             }
             return Optional.ofNullable(resolved);

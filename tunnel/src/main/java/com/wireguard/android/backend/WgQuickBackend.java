@@ -14,20 +14,13 @@ import com.wireguard.android.backend.Tunnel.State;
 import com.wireguard.android.util.RootShell;
 import com.wireguard.android.util.ToolsInstaller;
 import com.wireguard.config.Config;
+import com.wireguard.config.InetEndpoint;
+import com.wireguard.config.SrvTxtResolver;
 import com.wireguard.crypto.Key;
 import com.wireguard.util.NonNullForAll;
 
-import org.xbill.DNS.Lookup;
-import org.xbill.DNS.Record;
-import org.xbill.DNS.SRVRecord;
-import org.xbill.DNS.TXTRecord;
-import org.xbill.DNS.SimpleResolver;
-import org.xbill.DNS.Type;
-
 import java.io.File;
 import java.io.FileOutputStream;
-import java.net.Inet4Address;
-import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
@@ -192,165 +185,106 @@ public final class WgQuickBackend implements Backend {
     }
 
     /**
-     * 解析并替换地址端口
-     * @param endpointLine
-     * @return
-     * @throws Exception
+     * 解析并替换 Endpoint 行中的 SRV/TXT 地址（端口为 0 时）。
+     * SRV/TXT 解析失败抛异常（与用户态 GoBackend 行为一致）。
      */
-    private static String replaceSrvAndIp4p(String endpointLine) throws Exception {
-        //添加srv和txt转发支持
-        Log.i(TAG, "============endpointLine: " + endpointLine);
-        String endpoint = endpointLine.replace("Endpoint", "").trim();
-        endpoint = endpoint.replace("endpoint", "").trim();
-        endpoint = endpoint.replace("=", "").trim();
-        final String[] endpointSplit = endpoint.split(":");
-        final String host = endpointSplit[0];
-        final int port = Integer.parseInt(endpointSplit[1]);
-        Log.i(TAG, "============endpointLine host: " + host);
-        Log.i(TAG, "============endpointLine port: " + port);
-        if (port == 0) {
-            String realHostIp = host;
-            int realPort = 0;
-            if((host.contains("._tcp.") || host.contains("._udp."))){
-                //走解析srv逻辑
-                Log.i(TAG, "============endpointLine 走解析srv逻辑: " + host);
-                SimpleResolver resolver = new SimpleResolver("223.5.5.5");
-                resolver.setPort(53);
-                final Lookup lookup = new Lookup(host, Type.SRV);
-                lookup.setResolver(resolver);
-                final Record[] records = lookup.run();
-                Log.i(TAG, "============endpointLine records: " + records);
-                if (records != null) {
-                    final Record record = records[0];
-                    Log.i(TAG, "============endpointLine record: " + record);
-                    if (record instanceof final SRVRecord srvRecord) {
-                        Log.i(TAG, "============endpointLine srvRecord: " + srvRecord);
-                        final String target = srvRecord.getTarget().toString();
-                        Log.i(TAG, "============endpointLine target: " + target);
-                        final InetAddress[] candidates = InetAddress.getAllByName(target);
-                        InetAddress address = candidates[0];
-                        Log.i(TAG, "============endpointLine address: " + address);
-                        for (final InetAddress candidate : candidates) {
-                            if (candidate instanceof Inet4Address) {
-                                address = candidate;
-                                break;
-                            }
-                        }
-                        Log.i(TAG, "============endpointLine address2: " + address);
-                        realHostIp = address.getHostAddress();
-                        realPort = srvRecord.getPort();
-                    }
-                } else {
-                    realHostIp = "0.0.0.0";
-                }
-            } else if(host.contains(".txt.")){
-                //走解析txt逻辑，txt记录格式为 ip:端口
-                //支持泛解析：*替换为当前Unix时间戳，如 *.xxx.txt.example.com -> 1718400000.xxx.txt.example.com
-                String txtHost;
-                if (host.contains("*")) {
-                    txtHost = host.replace("*", String.valueOf(System.currentTimeMillis() / 1000));
-                    Log.i(TAG, "============endpointLine 走解析txt泛解析 host:"+host+" -> "+txtHost);
-                } else {
-                    txtHost = host;
-                }
-                Log.i(TAG, "============endpointLine 走解析txt逻辑: " + txtHost);
-                SimpleResolver resolver = new SimpleResolver("223.5.5.5");
-                resolver.setPort(53);
-                final Lookup lookup = new Lookup(txtHost, Type.TXT);
-                lookup.setResolver(resolver);
-                final Record[] records = lookup.run();
-                Log.i(TAG, "============endpointLine txt records: " + records);
-                if (records != null && records.length > 0) {
-                    final Record record = records[0];
-                    if (record instanceof final TXTRecord txtRecord) {
-                        @SuppressWarnings("unchecked")
-                        final List<String> txtStrings = txtRecord.getStrings();
-                        Log.i(TAG, "============endpointLine txtStrings: " + txtStrings);
-                        if (txtStrings != null && !txtStrings.isEmpty()) {
-                            final String txtValue = txtStrings.get(0);
-                            Log.i(TAG, "============endpointLine txtValue: " + txtValue);
-                            //txt记录格式为 ip:端口，如 1.2.3.4:51820
-                            final int colonIndex = txtValue.lastIndexOf(':');
-                            if (colonIndex > 0) {
-                                final String txtIp = txtValue.substring(0, colonIndex);
-                                final String txtPort = txtValue.substring(colonIndex + 1);
-                                // 简单验证ip格式
-                                InetAddress.getByName(txtIp);
-                                realHostIp = txtIp;
-                                realPort = Integer.parseInt(txtPort);
-                            }
-                        }
-                    }
-                } else {
-                    realHostIp = "0.0.0.0";
-                }
-            } else {
-                // 普通DNS解析，默认优先选择v4地址
-                final InetAddress[] candidates = InetAddress.getAllByName(host);
-                InetAddress address = candidates[0];
-                for (final InetAddress candidate : candidates) {
-                    if (candidate instanceof Inet4Address) {
-                        address = candidate;
-                        break;
-                    }
-                }
-                realHostIp = address.getHostAddress();
-            }
-            Log.i(TAG, "============endpointLine realHostIp: " + realHostIp);
-            Log.i(TAG, "============endpointLine realPort: " + realPort);
-            endpointLine = endpointLine.replace(host,realHostIp);
-            endpointLine = endpointLine.replace(":"+port,":"+realPort);
-            //endpointLine = "Endpoint = " + realHostIp + ":" + realPort;
-            Log.i(TAG, "============endpointLine replaced: " + endpointLine);
+    private static String replaceSrvAndIp4p(final String endpointLine) throws Exception {
+        final String trimmedLine = endpointLine == null ? "" : endpointLine.trim();
+        if (trimmedLine.isEmpty())
+            return endpointLine;
+        final int eq = trimmedLine.indexOf('=');
+        if (eq <= 0)
+            return endpointLine;
+        final String key = trimmedLine.substring(0, eq).trim();
+        if (!key.equalsIgnoreCase("Endpoint"))
+            return endpointLine;
+
+        final String endpoint = trimmedLine.substring(eq + 1).trim();
+        if (endpoint.isEmpty())
+            return endpointLine;
+
+        // 复用统一解析，保证与用户态 host/port 拆分规则一致
+        final InetEndpoint parsed;
+        try {
+            parsed = InetEndpoint.parse(endpoint);
+        } catch (final Exception e) {
+            Log.w(TAG, "Endpoint 格式无效: " + endpoint, e);
+            return endpointLine;
         }
-        return endpointLine;
+
+        final String host = parsed.getHost();
+        final int port = parsed.getPort();
+
+        // 仅 SRV/TXT（端口 0）需要预解析；其余交给 wg-quick
+        if (port != 0 || !SrvTxtResolver.isSrvOrTxtHost(host))
+            return endpointLine;
+
+        Log.i(TAG, "解析 Endpoint: " + host + ":" + port);
+        final Optional<SrvTxtResolver.Result> result = SrvTxtResolver.resolve(host, port);
+        if (result.isEmpty() || !result.get().isValid()) {
+            Log.w(TAG, "Endpoint 解析失败: " + endpoint);
+            throw new Exception("SRV/TXT DNS 解析失败: " + host);
+        }
+        final SrvTxtResolver.Result r = result.get();
+        final String replaced = "Endpoint = " + r.toEndpointString();
+        Log.i(TAG, "Endpoint 替换: " + endpoint + " -> " + r.toEndpointString());
+        return replaced;
     }
 
     private void setStateInternal(final Tunnel tunnel, @Nullable final Config config, final State state) throws Exception {
         Log.i(TAG, "Bringing tunnel " + tunnel.getName() + ' ' + state);
 
         Objects.requireNonNull(config, "Trying to set state up with a null config");
-        Log.i(TAG, "============localTemporaryDir: " + localTemporaryDir);
-        File tempFile = new File(localTemporaryDir, tunnel.getName() + ".conf");
+        if (!localTemporaryDir.isDirectory() && !localTemporaryDir.mkdirs())
+            Log.w(TAG, "无法创建临时目录: " + localTemporaryDir);
 
-        //final File tempFile = new File(localTemporaryDir, tunnel.getName() + ".conf");
-        try (final FileOutputStream stream = new FileOutputStream(tempFile, false)) {
-            stream.write(config.toWgQuickString().getBytes(StandardCharsets.UTF_8));
-        }
-        String command = String.format("wg-quick %s '%s'",
-                state.toString().toLowerCase(Locale.ENGLISH), tempFile.getAbsolutePath());
-        if (state == State.UP)
-            command = "cat /sys/module/wireguard/version && " + command;
-        Log.i(TAG, "============tempFile: " + tempFile);
-        Log.i(TAG, "============tempFile exists: " + tempFile.exists());
-        /*
-         * 解析srv/txt，修改tempFile文件中地址和端口，解决内核模式无法使用srv/txt的问题
-         */
-        //1.读取文件内容：将文件内容读入内存。
-        List<String> lines = Files.readAllLines(tempFile.toPath());
-        for (int i = 0; i < lines.size(); i++) {
-            String lineStr = lines.get(i);
-            if(lineStr.startsWith("Endpoint")||lineStr.startsWith("endpoint")){
-                //2.修改文件内容：对读入的内容进行所需的修改。
-                lineStr = replaceSrvAndIp4p(lineStr);
+        final File tempFile = new File(localTemporaryDir, tunnel.getName() + ".conf");
+        try {
+            try (final FileOutputStream stream = new FileOutputStream(tempFile, false)) {
+                stream.write(config.toWgQuickString().getBytes(StandardCharsets.UTF_8));
             }
-            lines.set(i, lineStr);
+            String command = String.format("wg-quick %s '%s'",
+                    state.toString().toLowerCase(Locale.ENGLISH), tempFile.getAbsolutePath());
+            if (state == State.UP)
+                command = "cat /sys/module/wireguard/version && " + command;
+            Log.i(TAG, "tempFile: " + tempFile + " exists=" + tempFile.exists());
+
+            /*
+             * 仅在 UP 时解析 SRV/TXT 并改写 Endpoint。
+             * DOWN 不查 DNS：避免 DNS 故障导致关隧道失败。
+             */
+            if (state == State.UP) {
+                final List<String> lines = Files.readAllLines(tempFile.toPath());
+                for (int i = 0; i < lines.size(); i++) {
+                    String lineStr = lines.get(i);
+                    final String trimmed = lineStr == null ? "" : lineStr.trim();
+                    if (trimmed.regionMatches(true, 0, "Endpoint", 0, "Endpoint".length())) {
+                        final int afterKey = "Endpoint".length();
+                        if (trimmed.length() > afterKey) {
+                            final char c = trimmed.charAt(afterKey);
+                            if (c == '=' || Character.isWhitespace(c))
+                                lineStr = replaceSrvAndIp4p(lineStr);
+                        }
+                    }
+                    lines.set(i, lineStr);
+                }
+                Files.write(tempFile.toPath(), lines);
+            }
+
+            final int result = rootShell.run(null, command);
+            if (result != 0)
+                throw new BackendException(Reason.WG_QUICK_CONFIG_ERROR_CODE, result);
+        } finally {
+            // 无论成功/DNS失败/异常，都删除含私钥的临时 conf
+            // noinspection ResultOfMethodCallIgnored
+            tempFile.delete();
         }
-        //3.写回文件内容：将修改后的内容写回文件
-        Files.write(tempFile.toPath(), lines);
-        final int result = rootShell.run(null, command);
-        // noinspection ResultOfMethodCallIgnored
-        tempFile.delete();
-        if (result != 0)
-            throw new BackendException(Reason.WG_QUICK_CONFIG_ERROR_CODE, result);
 
         if (state == State.UP) {
             runningConfigs.put(tunnel, config);
             tunnel.onStateChange(state);
-            // 隧道开启成功后启动握手超时监视器
             startHandshakeMonitor(tunnel, config);
         } else {
-            // 关闭隧道时停止握手超时监视器
             stopHandshakeMonitor();
             runningConfigs.remove(tunnel);
             tunnel.onStateChange(state);
